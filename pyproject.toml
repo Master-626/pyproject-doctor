@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyproject-doctor"
+version = "0.1.0"
+description = "Zero-dependency CLI that checks small Python repos for README, pyproject, and ruff/pytest CI, and suggests one-line fixes."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Xu Jiaqi", email = "jiaqixu12138@gmail.com" }
+]
+keywords = ["cli", "lint", "pyproject", "ci", "python", "repo-hygiene"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = []
+
+[project.scripts]
+pyproject-doctor = "pyproject_doctor.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0,<8.4; python_version < '3.9'",
+    "pytest>=7.0.0; python_version >= '3.9'",
+    "ruff>=0.9.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Master-626/pyproject-doctor"
+Repository = "https://github.com/Master-626/pyproject-doctor"
+Issues = "https://github.com/Master-626/pyproject-doctor/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pyproject_doctor"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py38"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

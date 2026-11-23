@@ -1,0 +1,196 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from pyproject_doctor.checks import (
+    check_ci_pytest,
+    check_license,
+    check_pyproject,
+    check_readme,
+    check_ruff,
+    check_tests,
+    run_checks,
+)
+from tests.helpers import MINIMAL_README, complete_tree, local
+
+
+def test_complete_repo_passes_all_checks(write_tree, tmp_path: Path):
+    root = write_tree(complete_tree())
+    report = run_checks(local(root))
+    assert report.ok
+    assert report.passed == 6
+    assert {item.id for item in report.checks} == {
+        "readme",
+        "pyproject",
+        "tests",
+        "ci_pytest",
+        "ruff",
+        "license",
+    }
+
+
+def test_readme_missing(write_tree, tmp_path: Path):
+    root = write_tree({"notes.txt": "hi"})
+    result = check_readme(local(root))
+    assert not result.ok
+    assert "no README" in result.detail
+    assert result.fix and "README.md" in result.fix
+
+
+def test_readme_trivial_title_only(write_tree, tmp_path: Path):
+    root = write_tree({"README.md": "# Just a title\n"})
+    result = check_readme(local(root))
+    assert not result.ok
+    assert "too short" in result.detail or "only a title" in result.detail
+
+
+def test_readme_ok(write_tree, tmp_path: Path):
+    root = write_tree({"README.md": MINIMAL_README})
+    result = check_readme(local(root))
+    assert result.ok
+    assert "README.md" in result.detail
+
+
+def test_pyproject_missing(write_tree, tmp_path: Path):
+    root = write_tree({"README.md": MINIMAL_README})
+    result = check_pyproject(local(root))
+    assert not result.ok
+    assert "no pyproject.toml" in result.detail
+
+
+def test_pyproject_missing_fields(write_tree, tmp_path: Path):
+    root = write_tree({"pyproject.toml": '[project]\nname = "demo"\n'})
+    result = check_pyproject(local(root))
+    assert not result.ok
+    assert "version" in result.detail
+    assert "requires-python" in result.detail
+    assert "license" in result.detail
+    assert result.fix and "requires-python" in result.fix
+
+
+def test_pyproject_accepts_dynamic_version_and_license_files(write_tree, tmp_path: Path):
+    root = write_tree(
+        {
+            "pyproject.toml": """
+[project]
+name = "demo"
+dynamic = ["version"]
+requires-python = ">=3.8"
+license-files = ["LICENSE"]
+"""
+        }
+    )
+    result = check_pyproject(local(root))
+    assert result.ok
+    assert "version=dynamic" in result.detail
+
+
+def test_pyproject_invalid_toml(write_tree, tmp_path: Path):
+    root = write_tree({"pyproject.toml": "[project\nname = "})
+    result = check_pyproject(local(root))
+    assert not result.ok
+    assert "could not parse" in result.detail
+
+
+def test_tests_missing(write_tree, tmp_path: Path):
+    root = write_tree({"src/demo.py": "x = 1\n"})
+    result = check_tests(local(root))
+    assert not result.ok
+    assert "no tests/" in result.detail
+    assert result.fix and "tests/" in result.fix
+
+
+def test_tests_config_without_files(write_tree, tmp_path: Path):
+    root = write_tree(
+        {
+            "pyproject.toml": "[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n",
+        }
+    )
+    result = check_tests(local(root))
+    assert not result.ok
+    assert "no test_" in result.detail
+
+
+def test_tests_present(write_tree, tmp_path: Path):
+    root = write_tree({"tests/test_demo.py": "def test_ok():\n    assert True\n"})
+    result = check_tests(local(root))
+    assert result.ok
+    assert "1 test file" in result.detail
+
+
+def test_ci_pytest_missing_workflow(write_tree, tmp_path: Path):
+    root = write_tree({"README.md": MINIMAL_README})
+    result = check_ci_pytest(local(root))
+    assert not result.ok
+    assert "no GitHub Actions workflow" in result.detail
+
+
+def test_ci_pytest_workflow_without_pytest(write_tree, tmp_path: Path):
+    root = write_tree({".github/workflows/ci.yml": "name: CI\njobs:\n  lint:\n    runs-on: ubuntu-latest\n"})
+    result = check_ci_pytest(local(root))
+    assert not result.ok
+    assert "none run pytest" in result.detail
+
+
+def test_ci_pytest_present(write_tree, tmp_path: Path):
+    root = write_tree({".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: pytest -q\n"})
+    result = check_ci_pytest(local(root))
+    assert result.ok
+
+
+def test_ruff_missing_both(write_tree, tmp_path: Path):
+    root = write_tree({"README.md": MINIMAL_README})
+    result = check_ruff(local(root))
+    assert not result.ok
+    assert "not configured" in result.detail
+    assert result.fix and "tool.ruff" in result.fix
+
+
+def test_ruff_configured_but_not_in_ci(write_tree, tmp_path: Path):
+    root = write_tree(
+        {
+            "ruff.toml": "line-length = 88\n",
+            ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: pytest\n",
+        }
+    )
+    result = check_ruff(local(root))
+    assert not result.ok
+    assert "not run in CI" in result.detail
+
+
+def test_ruff_in_ci_but_not_configured(write_tree, tmp_path: Path):
+    root = write_tree({".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: ruff check .\n"})
+    result = check_ruff(local(root))
+    assert not result.ok
+    assert "no ruff config" in result.detail
+
+
+def test_ruff_ok(write_tree, tmp_path: Path):
+    root = write_tree(
+        {
+            "pyproject.toml": "[tool.ruff]\nline-length = 88\n",
+            ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: ruff check .\n",
+        }
+    )
+    result = check_ruff(local(root))
+    assert result.ok
+
+
+def test_license_missing(write_tree, tmp_path: Path):
+    root = write_tree({"README.md": MINIMAL_README})
+    result = check_license(local(root))
+    assert not result.ok
+    assert "no LICENSE" in result.detail
+
+
+def test_license_present(write_tree, tmp_path: Path):
+    root = write_tree({"LICENSE": "MIT License\n\nPermission is hereby granted, free of charge\nTHE SOFTWARE IS PROVIDED\n"})
+    result = check_license(local(root))
+    assert result.ok
+    assert "MIT" in result.detail
+
+
+def test_this_repository_passes():
+    root = Path(__file__).resolve().parents[1]
+    report = run_checks(local(root))
+    assert report.ok, [item.to_dict() for item in report.checks if not item.ok]
