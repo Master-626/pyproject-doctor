@@ -81,7 +81,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="pyproject-doctor",
         description=(
             "Check a small Python repo for README, pyproject.toml, tests, "
-            "ruff/pytest CI, and a LICENSE file, and suggest one-line fixes."
+            "ruff/pytest CI, a LICENSE file, and a Python .gitignore, "
+            "and suggest one-line fixes."
         ),
     )
     parser.add_argument(

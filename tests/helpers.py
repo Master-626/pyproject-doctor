@@ -38,6 +38,13 @@ jobs:
 
 MIT_LICENSE = "MIT License\n\nCopyright (c) 2026 Example\n"
 
+GITIGNORE = """\
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+"""
+
 
 def complete_tree() -> Dict[str, str]:
     return {
@@ -46,6 +53,7 @@ def complete_tree() -> Dict[str, str]:
         "tests/test_demo.py": "def test_ok():\n    assert True\n",
         ".github/workflows/ci.yml": CI_BOTH,
         "LICENSE": MIT_LICENSE,
+        ".gitignore": GITIGNORE,
     }
 
 

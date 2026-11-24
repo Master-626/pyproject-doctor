@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyproject-doctor"
-version = "0.1.0"
-description = "Zero-dependency CLI that checks small Python repos for README, pyproject, and ruff/pytest CI, and suggests one-line fixes."
+version = "0.1.1"
+description = "Zero-dependency CLI that checks small Python repos for README, pyproject, tests, ruff/pytest CI, license, and gitignore, and suggests one-line fixes."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
@@ -50,7 +50,7 @@ packages = ["src/pyproject_doctor"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-pythonpath = ["."]
+pythonpath = ["src"]
 
 [tool.ruff]
 target-version = "py38"

@@ -62,8 +62,19 @@ class FakeGitHub:
 def test_parse_github_spec_variants():
     assert parse_github_spec("owner/name") == ("owner", "name")
     assert parse_github_spec("https://github.com/owner/name.git") == ("owner", "name")
+    assert parse_github_spec("https://github.com/owner/name/") == ("owner", "name")
+    assert parse_github_spec("https://github.com/owner/name/tree/main") == ("owner", "name")
+    assert parse_github_spec("https://www.github.com/owner/name") == ("owner", "name")
+    assert parse_github_spec("https://github.com/owner/name?tab=readme-ov-file") == ("owner", "name")
+    assert parse_github_spec("https://github.com/owner/name#readme") == ("owner", "name")
+    assert parse_github_spec("git@github.com:owner/name.git") == ("owner", "name")
+    assert parse_github_spec("ssh://git@github.com/owner/name.git") == ("owner", "name")
+    assert parse_github_spec("ssh://git@github.com:owner/name.git") == ("owner", "name")
+    assert parse_github_spec("https://github.com/owner/name.git?tab=readme") == ("owner", "name")
     with pytest.raises(SourceError):
         parse_github_spec("only-owner")
+    with pytest.raises(SourceError):
+        parse_github_spec("https://gitlab.com/owner/name")
 
 
 def test_github_source_runs_checks_with_mocked_api():
@@ -113,6 +124,33 @@ def test_github_http_404_is_source_error():
     with pytest.raises(SourceError) as exc:
         GitHubSource("owner", "missing", opener=opener)
     assert "not found" in str(exc.value)
+
+
+def test_github_branch_with_slash_is_fully_encoded():
+    opener = FakeGitHub(complete_tree(), default_branch="release/1.0")
+    source = GitHubSource("owner", "demo", opener=opener)
+    assert source.default_branch == "release/1.0"
+    assert source.label().endswith("@release/1.0")
+    assert any("/git/trees/release%2F1.0" in url for url in opener.calls)
+    source.read_text("README.md")
+    contents = [url for url in opener.calls if "/contents/" in url]
+    assert contents
+    assert all("ref=release%2F1.0" in url for url in contents)
+    assert all("%2F" not in url.split("/contents/", 1)[1].split("?", 1)[0] for url in contents)
+
+
+def test_github_truncated_tree_is_an_error():
+    def opener(request, timeout=30):
+        url = request.full_url if isinstance(request, Request) else str(request)
+        if url.endswith("/repos/owner/demo"):
+            return FakeResponse({"default_branch": "main"})
+        if "/git/trees/" in url:
+            return FakeResponse({"tree": [{"path": "README.md", "type": "blob", "sha": "abc"}], "truncated": True})
+        raise AssertionError(url)
+
+    with pytest.raises(SourceError) as exc:
+        GitHubSource("owner", "demo", opener=opener)
+    assert "truncated" in str(exc.value)
 
 
 def test_github_rate_limit_mentions_token():
