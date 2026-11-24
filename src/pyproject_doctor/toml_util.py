@@ -37,6 +37,20 @@ def table(data: dict, *path: str) -> dict:
     return current if isinstance(current, dict) else {}
 
 
+def has_table(data: dict, *path: str) -> bool:
+    """Return whether ``path`` refers to a table, including an empty one.
+
+    :func:`table` cannot tell a missing table from an empty one, because both
+    come back as ``{}``.
+    """
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return False
+        current = current[key]
+    return isinstance(current, dict)
+
+
 def as_str_list(value: Any) -> List[str]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, str)]
@@ -54,6 +68,7 @@ class _FallbackParser:
         self.i = 0
         self.root: dict = {}
         self.current: dict = self.root
+        self.explicit_tables = set()
 
     def parse(self) -> dict:
         try:
@@ -111,6 +126,11 @@ class _FallbackParser:
         if self._peek() != "]":
             raise TomlParseError("expected ] after table name")
         self._advance()
+        if not array:
+            path = tuple(keys)
+            if path in self.explicit_tables:
+                raise TomlParseError("table [%s] is already defined" % ".".join(keys))
+            self.explicit_tables.add(path)
         target = self._ensure_table(keys, array=array)
         self.current = target
 
@@ -136,6 +156,10 @@ class _FallbackParser:
                 node = nxt
                 continue
             if isinstance(existing, list):
+                # ``[name]`` cannot redefine ``[[name]]``. A dotted header such as
+                # ``[name.child]`` still attaches to the last array element.
+                if last and not array:
+                    raise TomlParseError("table/array conflict at %s" % ".".join(keys))
                 if not existing or not isinstance(existing[-1], dict):
                     raise TomlParseError("table/array conflict at %s" % ".".join(keys))
                 node = existing[-1]
@@ -219,9 +243,27 @@ class _FallbackParser:
         start = self.i
         if self._peek() in "+-":
             self.i += 1
-        while self.i < self.n and (self.s[self.i].isdigit() or self.s[self.i] in "._xXbBoOabcdefABCDEF"):
+        special = self.s[self.i : self.i + 3].lower()
+        if special in ("inf", "nan") and not self._ident_continues(self.i + 3):
+            self.i += 3
+            return float(self.s[start : self.i])
+        while self.i < self.n and (
+            self.s[self.i].isdigit() or self.s[self.i] in "._xXbBoOabcdefABCDEF"
+        ):
             self.i += 1
+        # ``1e10`` is consumed above. ``1e-10`` stops at the sign, which is not
+        # part of the digit/hex class, so take the signed exponent here.
+        if self.i > start and self.s[self.i - 1] in "eE" and self._peek() in "+-":
+            self.i += 1
+            digits = 0
+            while self.i < self.n and self.s[self.i].isdigit():
+                self.i += 1
+                digits += 1
+            if digits == 0:
+                raise TomlParseError("invalid number")
         raw = self.s[start : self.i].replace("_", "")
+        if raw in ("", "+", "-"):
+            raise TomlParseError("invalid number")
         if any(c in raw for c in ".eE") and not raw.lower().startswith(("0x", "0o", "0b")):
             return float(raw)
         if raw.lower().startswith("0x"):
@@ -231,6 +273,12 @@ class _FallbackParser:
         if raw.lower().startswith("0b"):
             return int(raw, 2)
         return int(raw)
+
+    def _ident_continues(self, index: int) -> bool:
+        if index >= self.n:
+            return False
+        ch = self.s[index]
+        return ch.isalnum() or ch == "_"
 
     def _parse_array(self) -> list:
         self._advance()  # [

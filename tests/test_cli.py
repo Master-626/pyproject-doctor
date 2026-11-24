@@ -15,7 +15,7 @@ def test_cli_json_success_exit_zero(write_tree, tmp_path: Path):
     assert code == 0
     payload = json.loads(stdout.getvalue())
     assert payload["ok"] is True
-    assert payload["passed"] == 6
+    assert payload["passed"] == 7
     assert payload["failed"] == 0
     assert stderr.getvalue() == ""
 
@@ -36,9 +36,9 @@ def test_cli_fail_under_allows_partial_success(write_tree, tmp_path: Path):
     # Drop the license so one check fails.
     (root / "LICENSE").unlink()
     stdout = StringIO()
-    code = run([str(root), "--fail-under", "5", "--json"], stdout=stdout)
+    code = run([str(root), "--fail-under", "6", "--json"], stdout=stdout)
     payload = json.loads(stdout.getvalue())
-    assert payload["passed"] == 5
+    assert payload["passed"] == 6
     assert payload["failed"] == 1
     assert code == 0
     code_strict = run([str(root), "--strict"], stdout=StringIO())
@@ -58,3 +58,22 @@ def test_cli_rejects_path_and_github_together(tmp_path: Path):
     code = run([str(tmp_path), "--github", "owner/name"], stdout=StringIO(), stderr=stderr)
     assert code == 2
     assert "not both" in stderr.getvalue()
+
+
+def test_cli_reports_missing_gitignore(write_tree, tmp_path: Path):
+    root = write_tree(complete_tree())
+    (root / ".gitignore").unlink()
+    stdout = StringIO()
+    code = run([str(root)], stdout=stdout, stderr=StringIO())
+    assert code == 1
+    text = stdout.getvalue()
+    assert "gitignore" in text
+    assert "Suggested fixes:" in text
+    assert "__pycache__" in text
+
+
+def test_cli_rejects_non_github_url():
+    stderr = StringIO()
+    code = run(["--github", "https://gitlab.com/owner/name"], stdout=StringIO(), stderr=stderr)
+    assert code == 2
+    assert "owner/name" in stderr.getvalue()

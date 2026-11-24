@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
 from pyproject_doctor.sources import RepoSource
-from pyproject_doctor.toml_util import as_str_list, parse_file_text, table
+from pyproject_doctor.toml_util import as_str_list, has_table, parse_file_text, table
 
 README_NAMES = ("README.md", "README.rst", "README.txt", "README", "README.markdown")
 LICENSE_NAMES = (
@@ -24,6 +24,19 @@ LICENSE_NAMES = (
 RUFF_FILENAMES = ("ruff.toml", ".ruff.toml")
 PYTEST_CONFIG_NAMES = ("pytest.ini", "pytest.toml", "setup.cfg", "tox.ini")
 TEST_DIR_NAMES = ("tests", "test")
+GITIGNORE_NAMES = (".gitignore",)
+# Substrings that mean a .gitignore rule is covering Python bytecode, packaging
+# metadata, a virtualenv, or a tool cache. ``venv`` is matched as a path segment.
+_GITIGNORE_MARKERS = (
+    "__pycache__",
+    "*.py[cod]",
+    "*.pyc",
+    ".venv",
+    "egg-info",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+)
 WORKFLOW_DIR = ".github/workflows"
 MIN_README_CHARS = 80
 
@@ -93,6 +106,7 @@ def run_checks(source: RepoSource) -> Report:
     report.checks.append(check_ci_pytest(source))
     report.checks.append(check_ruff(source))
     report.checks.append(check_license(source))
+    report.checks.append(check_gitignore(source))
     return report
 
 
@@ -161,8 +175,7 @@ def check_pyproject(source: RepoSource) -> CheckResult:
             detail="could not parse %s: %s" % (path, error),
             fix="Fix the TOML syntax in pyproject.toml, then set [project] name, version, requires-python, and license.",
         )
-    project = table(data, "project")
-    if not project:
+    if not has_table(data, "project"):
         return CheckResult(
             id="pyproject",
             name=name,
@@ -170,6 +183,7 @@ def check_pyproject(source: RepoSource) -> CheckResult:
             detail="pyproject.toml has no [project] table",
             fix='Add a [project] table to pyproject.toml with name, version, requires-python, and license, e.g. requires-python = ">=3.8" and license = {text = "MIT"}.',
         )
+    project = table(data, "project")
     missing = _missing_project_fields(project)
     if missing:
         return CheckResult(
@@ -223,10 +237,17 @@ def _version_label(project: dict) -> str:
 
 
 def _has_license_field(project: dict) -> bool:
-    if project.get("license") not in (None, "", {}, []):
+    license_field = project.get("license")
+    if isinstance(license_field, str) and license_field.strip():
         return True
-    files = project.get("license-files")
-    return bool(files)
+    if isinstance(license_field, dict):
+        text = license_field.get("text")
+        file_name = license_field.get("file")
+        if isinstance(text, str) and text.strip():
+            return True
+        if isinstance(file_name, str) and file_name.strip():
+            return True
+    return any(item.strip() for item in as_str_list(project.get("license-files")))
 
 
 def _license_label(project: dict) -> str:
@@ -274,13 +295,29 @@ def check_tests(source: RepoSource) -> CheckResult:
             detail="%s test file%s in %s%s"
             % (len(test_files), "" if len(test_files) == 1 else "s", locations, extra),
         )
+    test_dirs = _test_directories(source)
     if config:
+        if test_dirs:
+            where = " in %s" % ", ".join(test_dirs)
+            fix = "Add at least one test_*.py file under %s." % test_dirs[0]
+        else:
+            where = ""
+            fix = "Create a tests/ directory with at least one test_*.py file."
         return CheckResult(
             id="tests",
             name=name,
             status=STATUS_FAIL,
-            detail="pytest is configured (%s) but no test_*.py or *_test.py files were found" % config,
-            fix="Create a tests/ directory with at least one test_*.py file.",
+            detail="pytest is configured (%s) but no test_*.py or *_test.py files were found%s"
+            % (config, where),
+            fix=fix,
+        )
+    if test_dirs:
+        return CheckResult(
+            id="tests",
+            name=name,
+            status=STATUS_FAIL,
+            detail="%s exists but no test_*.py or *_test.py files were found" % ", ".join(test_dirs),
+            fix="Add at least one test_*.py (or *_test.py) file under %s." % test_dirs[0],
         )
     return CheckResult(
         id="tests",
@@ -289,6 +326,23 @@ def check_tests(source: RepoSource) -> CheckResult:
         detail="no tests/ directory and no pytest configuration",
         fix="Create a tests/ directory with at least one test_*.py file, and add [tool.pytest.ini_options] to pyproject.toml (or a pytest.ini).",
     )
+
+
+def _test_directories(source: RepoSource) -> List[str]:
+    found: List[str] = []
+    seen = set()
+    for path in source.list_files():
+        parts = path.split("/")
+        for index, part in enumerate(parts[:-1]):
+            if part.lower() not in TEST_DIR_NAMES:
+                continue
+            directory = "/".join(parts[: index + 1])
+            key = directory.lower()
+            if key not in seen:
+                seen.add(key)
+                found.append(directory)
+            break
+    return found
 
 
 def _test_files(source: RepoSource) -> List[str]:
@@ -320,7 +374,7 @@ def _pytest_config(source: RepoSource) -> Optional[str]:
     if pyproject:
         data, _error = parse_file_text(source.read_text(pyproject) or "")
         if data is not None:
-            if table(data, "tool", "pytest") or table(data, "tool", "pytest", "ini_options"):
+            if has_table(data, "tool", "pytest") or has_table(data, "tool", "pytest", "ini_options"):
                 return "pyproject.toml [tool.pytest]"
     path = _first_file(source, PYTEST_CONFIG_NAMES)
     if path is None:
@@ -408,7 +462,7 @@ def _ruff_config(source: RepoSource) -> Optional[str]:
     pyproject = _first_file(source, ("pyproject.toml",))
     if pyproject:
         data, _error = parse_file_text(source.read_text(pyproject) or "")
-        if data is not None and table(data, "tool", "ruff"):
+        if data is not None and has_table(data, "tool", "ruff"):
             return "pyproject.toml [tool.ruff]"
     return None
 
@@ -435,6 +489,51 @@ def check_license(source: RepoSource) -> CheckResult:
     )
 
 
+def check_gitignore(source: RepoSource) -> CheckResult:
+    name = ".gitignore"
+    path = _first_file(source, GITIGNORE_NAMES)
+    if path is None:
+        return CheckResult(
+            id="gitignore",
+            name=name,
+            status=STATUS_FAIL,
+            detail="no .gitignore at the repository root",
+            fix="Add a .gitignore that ignores Python artifacts such as __pycache__/, .venv/, and *.egg-info.",
+        )
+    text = source.read_text(path) or ""
+    if not _gitignore_covers_python(text):
+        return CheckResult(
+            id="gitignore",
+            name=name,
+            status=STATUS_FAIL,
+            detail="%s does not ignore Python build or cache artifacts" % path,
+            fix="Add Python ignores to .gitignore, for example __pycache__/, .venv/, and *.egg-info.",
+        )
+    return CheckResult(
+        id="gitignore",
+        name=name,
+        status=STATUS_PASS,
+        detail="%s ignores Python artifacts" % path,
+    )
+
+
+def _gitignore_covers_python(text: str) -> bool:
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip().lower()
+        if not line or line.startswith("!"):
+            continue
+        if any(marker in line for marker in _GITIGNORE_MARKERS):
+            return True
+        segments = [
+            part
+            for part in line.replace("\\", "/").split("/")
+            if part and part not in ("*", "**")
+        ]
+        if "venv" in segments:
+            return True
+    return False
+
+
 def _license_kind(text: str) -> Optional[str]:
     lower = text.lower()
     if "mit license" in lower or (
@@ -453,7 +552,21 @@ def _license_kind(text: str) -> Optional[str]:
 
 
 def _workflow_files(source: RepoSource) -> List[str]:
-    return source.files_under(WORKFLOW_DIR, suffixes=(".yml", ".yaml"))
+    """Return ``.yml`` / ``.yaml`` files placed directly in ``.github/workflows``.
+
+    GitHub Actions does not run workflow files in subdirectories. Nested YAML
+    (templates, composite snippets) must not count as CI.
+    """
+    prefix = WORKFLOW_DIR.lower().rstrip("/") + "/"
+    direct: List[str] = []
+    for path in source.files_under(WORKFLOW_DIR, suffixes=(".yml", ".yaml")):
+        normalized = path.replace("\\", "/").lower()
+        if not normalized.startswith(prefix):
+            continue
+        rest = normalized[len(prefix) :]
+        if rest and "/" not in rest:
+            direct.append(path)
+    return direct
 
 
 def _mentions(text: str, word: str) -> bool:

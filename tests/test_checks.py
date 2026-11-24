@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from pyproject_doctor.checks import (
     check_ci_pytest,
+    check_gitignore,
     check_license,
     check_pyproject,
     check_readme,
@@ -18,7 +21,7 @@ def test_complete_repo_passes_all_checks(write_tree, tmp_path: Path):
     root = write_tree(complete_tree())
     report = run_checks(local(root))
     assert report.ok
-    assert report.passed == 6
+    assert report.passed == 7
     assert {item.id for item in report.checks} == {
         "readme",
         "pyproject",
@@ -26,6 +29,7 @@ def test_complete_repo_passes_all_checks(write_tree, tmp_path: Path):
         "ci_pytest",
         "ruff",
         "license",
+        "gitignore",
     }
 
 
@@ -194,3 +198,163 @@ def test_this_repository_passes():
     root = Path(__file__).resolve().parents[1]
     report = run_checks(local(root))
     assert report.ok, [item.to_dict() for item in report.checks if not item.ok]
+
+
+def test_pyproject_empty_table_lists_missing_fields(write_tree, tmp_path: Path):
+    root = write_tree({"pyproject.toml": "[project]\n"})
+    result = check_pyproject(local(root))
+    assert not result.ok
+    assert "missing [project] fields" in result.detail
+    assert "name" in result.detail
+    assert "version" in result.detail
+
+
+@pytest.mark.parametrize(
+    "license_line",
+    [
+        'license = {text = ""}',
+        'license = {file = "  "}',
+        'license = "  "',
+        'license-files = [""]',
+    ],
+)
+def test_pyproject_rejects_blank_license_values(write_tree, tmp_path: Path, license_line: str):
+    root = write_tree(
+        {
+            "pyproject.toml": (
+                '[project]\nname = "demo"\nversion = "0.1.0"\n'
+                'requires-python = ">=3.8"\n%s\n' % license_line
+            )
+        }
+    )
+    result = check_pyproject(local(root))
+    assert not result.ok
+    assert "license" in result.detail
+
+
+def test_tests_directory_without_modules_is_not_described_as_missing(write_tree, tmp_path: Path):
+    root = write_tree({"tests/conftest.py": "import pytest\n", "tests/__init__.py": ""})
+    result = check_tests(local(root))
+    assert not result.ok
+    assert "no tests/ directory" not in result.detail
+    assert "tests exists" in result.detail
+    assert "no test_" in result.detail
+    assert result.fix and "tests" in result.fix
+
+
+def test_tests_empty_pytest_table_counts_as_config(write_tree, tmp_path: Path):
+    root = write_tree({"pyproject.toml": "[tool.pytest]\n"})
+    result = check_tests(local(root))
+    assert not result.ok
+    assert "pytest is configured" in result.detail
+
+
+def test_tests_config_and_directory_without_modules(write_tree, tmp_path: Path):
+    root = write_tree(
+        {
+            "pyproject.toml": "[tool.pytest.ini_options]\n",
+            "tests/conftest.py": "",
+        }
+    )
+    result = check_tests(local(root))
+    assert not result.ok
+    assert "pytest is configured" in result.detail
+    assert "in tests" in result.detail
+    assert result.fix and result.fix.startswith("Add at least one")
+
+
+def test_tests_empty_ini_options_counts_as_config(write_tree, tmp_path: Path):
+    root = write_tree({"pyproject.toml": "[tool.pytest.ini_options]\n"})
+    result = check_tests(local(root))
+    assert not result.ok
+    assert "pytest is configured" in result.detail
+
+
+def test_ci_pytest_ignores_nested_workflow_files(write_tree, tmp_path: Path):
+    root = write_tree(
+        {
+            ".github/workflows/ci.yml": "name: CI\njobs:\n  lint:\n    runs-on: ubuntu-latest\n",
+            ".github/workflows/templates/pytest.yml": "run: pytest\n",
+        }
+    )
+    result = check_ci_pytest(local(root))
+    assert not result.ok
+    assert "none run pytest" in result.detail
+    assert "templates" not in result.detail
+
+
+def test_ci_pytest_uses_top_level_workflow_only(write_tree, tmp_path: Path):
+    root = write_tree(
+        {
+            ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: pytest -q\n",
+            ".github/workflows/templates/unused.yml": "name: unused\n",
+        }
+    )
+    result = check_ci_pytest(local(root))
+    assert result.ok
+    assert "ci.yml" in result.detail
+    assert "templates" not in result.detail
+
+
+def test_ruff_empty_tool_table_counts_as_configured(write_tree, tmp_path: Path):
+    root = write_tree(
+        {
+            "pyproject.toml": "[tool.ruff]\n",
+            ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: ruff check .\n",
+        }
+    )
+    result = check_ruff(local(root))
+    assert result.ok
+
+
+def test_ruff_ignores_nested_workflow_files(write_tree, tmp_path: Path):
+    root = write_tree(
+        {
+            "pyproject.toml": "[tool.ruff]\nline-length = 88\n",
+            ".github/workflows/ci.yml": "jobs:\n  t:\n    steps:\n      - run: pytest\n",
+            ".github/workflows/templates/ruff.yml": "run: ruff check .\n",
+        }
+    )
+    result = check_ruff(local(root))
+    assert not result.ok
+    assert "not run in CI" in result.detail
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "__pycache__/\n",
+        "*.py[cod]\n",
+        ".venv/\n",
+        "venv/\n",
+        "*.egg-info/\n",
+        ".pytest_cache/\n",
+        "# comment\n__pycache__/  # bytecode\n",
+    ],
+)
+def test_gitignore_python_rules_pass(write_tree, tmp_path: Path, text: str):
+    root = write_tree({".gitignore": text})
+    result = check_gitignore(local(root))
+    assert result.ok
+    assert "ignores Python artifacts" in result.detail
+
+
+def test_gitignore_missing(write_tree, tmp_path: Path):
+    root = write_tree({"README.md": MINIMAL_README})
+    result = check_gitignore(local(root))
+    assert not result.ok
+    assert "no .gitignore" in result.detail
+    assert result.fix and "__pycache__" in result.fix
+
+
+def test_gitignore_without_python_rules(write_tree, tmp_path: Path):
+    root = write_tree({".gitignore": "node_modules/\ndist/\n"})
+    result = check_gitignore(local(root))
+    assert not result.ok
+    assert "does not ignore" in result.detail
+
+
+def test_gitignore_comment_does_not_count(write_tree, tmp_path: Path):
+    root = write_tree({".gitignore": "# ignore __pycache__ later\nnode_modules/\n"})
+    result = check_gitignore(local(root))
+    assert not result.ok

@@ -177,7 +177,7 @@ class GitHubSource(RepoSource):
             urllib.parse.quote(path, safe="/"),
         )
         if self.default_branch:
-            url += "?ref=%s" % urllib.parse.quote(self.default_branch)
+            url += "?ref=%s" % _quote_ref(self.default_branch)
         data = self._request(url, accept="application/vnd.github.raw")
         if isinstance(data, bytes):
             text = data.decode("utf-8", errors="replace")
@@ -195,9 +195,14 @@ class GitHubSource(RepoSource):
                 self.api_base,
                 self.owner,
                 self.repo,
-                urllib.parse.quote(self.default_branch),
+                _quote_ref(self.default_branch),
             )
         )
+        if tree.get("truncated"):
+            raise SourceError(
+                "GitHub file list for %s/%s is truncated; clone the repository and scan the local directory"
+                % (self.owner, self.repo)
+            )
         files: List[str] = []
         for entry in tree.get("tree") or []:
             if entry.get("type") != "blob":
@@ -264,23 +269,52 @@ def _http_error_detail(code: int, body: bytes) -> str:
     return "HTTP %s" % code
 
 
+_GITHUB_HTTP_PREFIXES = (
+    "https://github.com/",
+    "http://github.com/",
+    "https://www.github.com/",
+    "http://www.github.com/",
+    "github.com/",
+    "www.github.com/",
+)
+
+
+def _quote_ref(ref: str) -> str:
+    """Percent-encode a Git ref, including slashes (``release/1.0`` -> ``release%2F1.0``)."""
+    return urllib.parse.quote(ref, safe="")
+
+
 def parse_github_spec(spec: str) -> tuple:
     text = spec.strip()
-    for prefix in (
-        "https://github.com/",
-        "http://github.com/",
-        "github.com/",
-    ):
-        if text.lower().startswith(prefix):
-            text = text[len(prefix) :]
-            break
-    text = text.strip("/")
-    if text.endswith(".git"):
-        text = text[:-4]
+    lower = text.lower()
+    recognized = False
+    if lower.startswith("git@github.com:"):
+        text = text.split(":", 1)[1]
+        recognized = True
+    elif lower.startswith("ssh://git@github.com/"):
+        text = text[len("ssh://git@github.com/") :]
+        recognized = True
+    elif lower.startswith("ssh://git@github.com:"):
+        text = text[len("ssh://git@github.com:") :]
+        recognized = True
+    else:
+        for prefix in _GITHUB_HTTP_PREFIXES:
+            if lower.startswith(prefix):
+                text = text[len(prefix) :]
+                recognized = True
+                break
+    if not recognized and ("://" in lower or lower.startswith("git@")):
+        raise SourceError("expected a GitHub repo of the form owner/name, got %r" % spec)
+    text = text.split("?", 1)[0].split("#", 1)[0].strip().strip("/")
+    if text.lower().endswith(".git"):
+        text = text[: -len(".git")]
     parts = [part for part in text.split("/") if part]
     if len(parts) < 2:
         raise SourceError("expected a GitHub repo of the form owner/name, got %r" % spec)
-    return parts[0], parts[1]
+    owner, repo = parts[0], parts[1]
+    if any(char in owner + repo for char in " :?#"):
+        raise SourceError("expected a GitHub repo of the form owner/name, got %r" % spec)
+    return owner, repo
 
 
 def github_token_from_env(env: Optional[Iterable] = None) -> Optional[str]:
