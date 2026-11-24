@@ -1,0 +1,20 @@
+command: /home/ubuntu/.local/bin/pyproject-doctor /tmp/pyproject-doctor-demo-reld9ghk/sample
+exit_code: 1
+--- stdout ---
+Target: /tmp/pyproject-doctor-demo-reld9ghk/sample
+
+  STATUS  CHECK       DETAIL                                                                         
+  ------  ----------  -------------------------------------------------------------------------------
+  pass    README      README.md (234 characters)
+  pass    pyproject   pyproject.toml (name=sample; version=0.1.0; requires-python=>=3.8; license=MIT)
+  pass    tests       1 test file in tests/; pyproject.toml [tool.pytest]
+  pass    CI pytest   pytest runs in .github/workflows/ci.yml
+  fail    ruff        ruff is configured in pyproject.toml [tool.ruff] but is not run in CI
+  fail    LICENSE     no LICENSE file at the repository root
+  pass    .gitignore  .gitignore ignores Python artifacts
+
+5 passed, 2 failed
+
+Suggested fixes:
+  ruff        Add a CI step that runs `ruff check` in a workflow under .github/workflows/.
+  license     Add a LICENSE file (for example the MIT license text) at the repository root.
